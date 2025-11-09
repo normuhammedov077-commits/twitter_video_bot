@@ -1,0 +1,88 @@
+# 🧠 Python build and cache files
+
+__pycache__/
+
+*.py[cod]
+
+*$py.class
+
+
+
+# 🧰 Environment files
+
+.env
+
+.env.*
+
+*.env
+
+
+
+# 📦 Virtual environment folders
+
+venv/
+
+env/
+
+.venv/
+
+ENV/
+
+
+
+# 🧾 Logs and database files
+
+*.log
+
+*.sqlite3
+
+*.db
+
+
+
+# 📁 System files
+
+.DS_Store
+
+Thumbs.db
+
+
+
+# 🔧 IDE/editor settings
+
+.vscode/
+
+.idea/
+
+*.swp
+
+
+
+# 🪄 Dependency directories
+
+node_modules/
+
+bower_components/
+
+
+
+# 🚫 Test or temp files
+
+*.tmp
+
+*.bak
+
+*.old
+
+
+
+# 🎬 Downloaded videos and cache
+
+downloads/
+
+*.mp4
+
+*.mp3
+
+*.webm
+
