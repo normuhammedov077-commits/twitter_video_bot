@@ -6,6 +6,7 @@ from aiogram import Bot, Dispatcher, Router, F
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery
+from aiogram.client.default import DefaultBotProperties
 
 from .config import load_settings
 from .utils import extract_url
@@ -129,7 +130,10 @@ CONTEXT: Dict[tuple[int, str], Dict] = {}
 async def main():
     settings = load_settings()
     init_db()
-    bot = Bot(settings.bot_token, parse_mode=ParseMode.HTML)
+    bot = Bot(
+        settings.bot_token,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+    )
     dp = Dispatcher()
     dp.include_router(router)
     await dp.start_polling(bot)
