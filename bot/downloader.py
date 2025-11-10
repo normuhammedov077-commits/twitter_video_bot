@@ -80,6 +80,33 @@ async def extract_info(url: str) -> Dict:
     media_urls = info.get("media_urls") or []
     is_gif = info.get("is_animated_gif", False) or info.get("animated_gif", False)
 
+    # Extract image URLs from various possible locations
+    image_urls = []
+    
+    # From media_urls (direct list of URLs)
+    if media_urls:
+        if isinstance(media_urls, list):
+            image_urls.extend([url for url in media_urls if isinstance(url, str)])
+    
+    # From thumbnails
+    if images:
+        for img in images:
+            if isinstance(img, dict):
+                url = img.get("url") or img.get("href")
+                if url:
+                    image_urls.append(url)
+            elif isinstance(img, str):
+                image_urls.append(img)
+    
+    # From thumbnail field (single image)
+    if info.get("thumbnail"):
+        image_urls.append(info["thumbnail"])
+    
+    # From thumbnails list in formats (sometimes images are here)
+    for f in formats:
+        if f.get("thumbnail"):
+            image_urls.append(f["thumbnail"])
+
     # Identify video formats
     video_formats = []
     for f in formats:
@@ -91,7 +118,7 @@ async def extract_info(url: str) -> Dict:
         media_type = "video"
     elif is_gif:
         media_type = "gif"
-    elif images or media_urls:
+    elif image_urls:
         media_type = "photo"
 
     return {
@@ -99,7 +126,7 @@ async def extract_info(url: str) -> Dict:
         "media_type": media_type,
         "video_formats": video_formats,
         "images": images,
-        "media_urls": media_urls,
+        "media_urls": list(set(image_urls)),  # Remove duplicates
         "is_gif": is_gif,
     }
 
