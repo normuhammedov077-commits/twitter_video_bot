@@ -1,10 +1,23 @@
 from __future__ import annotations
 
+import asyncio
 import os
+import tempfile
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 import yt_dlp
+
+
+def normalize_twitter_url(url: str) -> str:
+    """Normalizes Twitter/X URLs (x.com, mobile.twitter.com, t.co redirects)"""
+    url = url.strip()
+    url = url.replace("mobile.twitter.com", "twitter.com")
+    if "x.com/" in url and "twitter.com" not in url:
+        url = url.replace("x.com/", "twitter.com/")
+    if "t.co/" in url and "twitter.com" not in url:
+        url = url.replace("t.co/", "twitter.com/")
+    return url
 
 
 @dataclass
@@ -23,35 +36,93 @@ class ExtractResult:
     upload_date: Optional[str]
     description: Optional[str]
     variants: List[VideoVariant]
+    media_type: str  # "video", "gif", "photo", "none"
 
 
 QUALITY_ORDER = ["1080", "720", "480", "360", "240"]
 
 
-def _create_ydl(params: Optional[Dict] = None) -> yt_dlp.YoutubeDL:
-    base_opts = {
+async def extract_info(url: str) -> Dict:
+    """
+    Extracts video/gif/image information from a Tweet.
+    Returns a dictionary with media information.
+    """
+    loop = asyncio.get_event_loop()
+    url = normalize_twitter_url(url)
+
+    ydl_opts = {
         "quiet": True,
+        "skip_download": True,
         "no_warnings": True,
-        "restrictfilenames": True,
-        "outtmpl": "%(id)s.%(ext)s",
-        "noplaylist": True,
-        # Work around rate limits/retries
+        "ignoreerrors": True,
         "retries": 10,
         "fragment_retries": 10,
         "concurrent_fragment_downloads": 4,
     }
-    if params:
-        base_opts.update(params)
-    return yt_dlp.YoutubeDL(base_opts)
 
+    def _extract():
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            return ydl.extract_info(url, download=False)
 
-def extract_variants(url: str) -> ExtractResult:
-    with _create_ydl({"skip_download": True}) as ydl:
-        info = ydl.extract_info(url, download=False)
+    info = await loop.run_in_executor(None, _extract)
 
-    # If this is a playlist-like (multi-video) post, select first entry for now
+    if not info:
+        raise ValueError("Could not read post or URL is invalid.")
+
+    # Handle playlist-like entries
     if info.get("entries"):
-        info = info["entries"][0]
+        entries = [e for e in info["entries"] if e]
+        if entries:
+            info = entries[0]
+
+    formats = info.get("formats") or []
+    images = info.get("thumbnails") or []
+    media_urls = info.get("media_urls") or []
+    is_gif = info.get("is_animated_gif", False) or info.get("animated_gif", False)
+
+    # Identify video formats
+    video_formats = []
+    for f in formats:
+        if f.get("vcodec") and f.get("vcodec") != "none" and f.get("ext") in ("mp4", "webm"):
+            video_formats.append(f)
+
+    media_type = "none"
+    if video_formats:
+        media_type = "video"
+    elif is_gif:
+        media_type = "gif"
+    elif images or media_urls:
+        media_type = "photo"
+
+    return {
+        "info": info,
+        "media_type": media_type,
+        "video_formats": video_formats,
+        "images": images,
+        "media_urls": media_urls,
+        "is_gif": is_gif,
+    }
+
+
+def choose_best_format(formats: List[Dict]) -> Dict:
+    """Selects the best (largest) MP4 format"""
+    if not formats:
+        raise ValueError("Video format not found.")
+    mp4s = [f for f in formats if f.get("ext") == "mp4"]
+    candidates = mp4s if mp4s else formats
+    sorted_formats = sorted(candidates, key=lambda x: (x.get("height") or 0), reverse=True)
+    return sorted_formats[0]
+
+
+async def extract_variants(url: str) -> ExtractResult:
+    """
+    Extracts video variants from a Twitter/X URL.
+    Returns ExtractResult with available video qualities.
+    """
+    data = await extract_info(url)
+    info = data["info"]
+    video_formats = data["video_formats"]
+    media_type = data["media_type"]
 
     video_id = info.get("id") or "video"
     title = info.get("title") or ""
@@ -59,16 +130,9 @@ def extract_variants(url: str) -> ExtractResult:
     upload_date = info.get("upload_date")
     description = info.get("description")
 
-    formats = info.get("formats", [])
+    # Convert formats to VideoVariant objects
     variants: List[VideoVariant] = []
-    for f in formats:
-        if not f.get("vcodec") or f.get("acodec") in ("none", None):
-            # prefer muxed formats (contain audio)
-            if f.get("acodec") in ("none", None):
-                continue
-        if f.get("vcodec") in ("none", None):
-            continue
-
+    for f in video_formats:
         height = f.get("height")
         if not height:
             continue
@@ -107,15 +171,33 @@ def extract_variants(url: str) -> ExtractResult:
         upload_date=upload_date,
         description=description,
         variants=final_variants,
+        media_type=media_type,
     )
 
 
-def download_variant(url: str, format_id: str, output_dir: str, output_basename: Optional[str] = None) -> str:
-    os.makedirs(output_dir, exist_ok=True)
-    outtmpl = os.path.join(output_dir, f"{output_basename or '%(id)s'}.%(ext)s")
-    opts = {
-        "format": format_id,
+async def download_format(url: str, format_id: str, out_dir: Optional[str] = None, output_basename: Optional[str] = None) -> str:
+    """Downloads the selected format"""
+    loop = asyncio.get_event_loop()
+    url = normalize_twitter_url(url)
+    
+    if out_dir is None:
+        out_dir = tempfile.mkdtemp(prefix="xvid_")
+    else:
+        os.makedirs(out_dir, exist_ok=True)
+
+    # Use output_basename if provided, otherwise use video ID
+    if output_basename:
+        outtmpl = os.path.join(out_dir, f"{output_basename}.%(ext)s")
+    else:
+        outtmpl = os.path.join(out_dir, "%(id)s.%(ext)s")
+    
+    ydl_opts = {
         "outtmpl": outtmpl,
+        "format": format_id,
+        "quiet": True,
+        "no_warnings": True,
+        "retries": 10,
+        "fragment_retries": 10,
         "merge_output_format": "mp4",
         "postprocessors": [
             {
@@ -124,13 +206,33 @@ def download_variant(url: str, format_id: str, output_dir: str, output_basename:
             }
         ],
     }
-    with _create_ydl(opts) as ydl:
-        result = ydl.extract_info(url, download=True)
-        if result.get("requested_downloads"):
-            filename = result["requested_downloads"][0]["filepath"]
-        else:
-            filename = ydl.prepare_filename(result)
-    return filename
+
+    def _download():
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+
+    await loop.run_in_executor(None, _download)
+    
+    # If output_basename was provided, the file should be named with that basename
+    if output_basename:
+        expected_path = os.path.join(out_dir, f"{output_basename}.mp4")
+        if os.path.exists(expected_path):
+            return expected_path
+        # Fallback: try with other extensions
+        for ext in ['.webm', '.mkv', '.mp4']:
+            candidate = os.path.join(out_dir, f"{output_basename}{ext}")
+            if os.path.exists(candidate):
+                return candidate
+    
+    # Otherwise, find the downloaded file
+    files = [f for f in os.listdir(out_dir) if f.endswith(('.mp4', '.webm', '.mkv'))]
+    if not files:
+        raise ValueError("Download failed.")
+    
+    return os.path.join(out_dir, files[0])
 
 
-
+# Backward compatibility alias
+async def download_variant(url: str, format_id: str, output_dir: str, output_basename: Optional[str] = None) -> str:
+    """Backward compatible wrapper for download_format"""
+    return await download_format(url, format_id, output_dir, output_basename)

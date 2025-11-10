@@ -10,7 +10,7 @@ from aiogram.client.default import DefaultBotProperties
 
 from .config import load_settings
 from .utils import extract_url
-from .downloader import extract_variants, download_variant
+from .downloader import extract_variants, download_variant, normalize_twitter_url
 from .keyboards import build_quality_keyboard
 from .cache import build_cache_key, get_cached_file_path, is_cached
 from .db import init_db, record_stat
@@ -34,15 +34,23 @@ async def handle_url(message: Message):
         await message.answer("Invalid or unsupported link.")
         return
 
+    # Normalize URL
+    url = normalize_twitter_url(url)
+
     status = await message.answer("Checking the post...")
     try:
-        result = await asyncio.to_thread(extract_variants, url)
-    except Exception:
-        await status.edit_text("An error occurred while fetching video info.")
+        result = await extract_variants(url)
+    except Exception as e:
+        await status.edit_text(f"An error occurred while fetching video info: {str(e)}")
         return
 
     if not result.variants:
-        await status.edit_text("This post does not contain a video.")
+        if result.media_type == "photo":
+            await status.edit_text("This post contains photos, not videos.")
+        elif result.media_type == "gif":
+            await status.edit_text("This post contains a GIF, which is not currently supported.")
+        else:
+            await status.edit_text("This post does not contain a video.")
         return
 
     # Build quality options
@@ -91,25 +99,25 @@ async def handle_quality_choice(callback: CallbackQuery):
         file_path = cached
     else:
         try:
-            temp_path = await asyncio.to_thread(
-                download_variant,
+            # Normalize URL before downloading
+            url = normalize_twitter_url(url)
+            file_path = await download_variant(
                 url,
                 format_id,
                 settings.download_dir,
                 cache_key,
             )
-        except Exception:
-            await callback.message.edit_text("An error occurred while downloading.")
+            # Ensure the file has the correct extension for cache
+            expected_path = get_cached_file_path(settings.download_dir, cache_key)
+            if file_path != expected_path and os.path.exists(file_path):
+                # Rename to expected cache filename
+                if os.path.exists(expected_path):
+                    os.remove(expected_path)
+                os.rename(file_path, expected_path)
+                file_path = expected_path
+        except Exception as e:
+            await callback.message.edit_text(f"An error occurred while downloading: {str(e)}")
             return
-        # Ensure final path ends with .mp4 using our cache path helper
-        file_path = get_cached_file_path(settings.download_dir, cache_key)
-        if temp_path != file_path:
-            try:
-                if os.path.exists(file_path):
-                    os.remove(file_path)
-            except Exception:
-                pass
-            os.replace(temp_path, file_path)
 
     # Send video
     from aiogram.types import FSInputFile

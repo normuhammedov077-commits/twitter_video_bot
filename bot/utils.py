@@ -2,7 +2,7 @@ import re
 from typing import Optional
 
 
-X_URL_RE = re.compile(r"https?://(x|twitter)\.com/[\w\-_/%.?=&]+", re.IGNORECASE)
+X_URL_RE = re.compile(r"https?://(x|twitter|mobile\.twitter|t\.co)\.com?/[\w\-_/%.?=&]+", re.IGNORECASE)
 
 
 def extract_url(text: str) -> Optional[str]:
